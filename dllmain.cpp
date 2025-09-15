@@ -14,21 +14,25 @@ namespace fs = std::filesystem;
 // --- Структура для хранения найденных файлов ---
 struct DirEntry {
 	std::wstring originalPath;  // полный путь к реальному файл
-	std::string name;
+	std::wstring name;
 	uint64_t size;
 	FILETIME time;
 };
 
-// --- Глобальный список файлов ---
-static std::vector<DirEntry> g_entries;
+struct PluginContext {
+	std::vector<DirEntry> entries;	// список файлов
+	size_t idx;
+};
+
 
 // --- Чтение .dir файла ---
-bool LoadDirFile(const char* fileName) 
+bool LoadDirFile(const wchar_t* fileName, PluginContext *ctx)
 {
-	g_entries.clear();
+	ctx->entries.clear();
 
 	std::wifstream in(fileName);
-	if (!in.is_open()) return false;
+	if (!in.is_open()) 
+		return false;
 
 	std::wstring line;
 	while (std::getline(in, line)) {
@@ -45,11 +49,11 @@ bool LoadDirFile(const char* fileName)
 			do {
 				if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
 					DirEntry e;
-					e.name = WideToAnsi(fd.cFileName);
+					e.name = fd.cFileName;
 					e.originalPath = path + L"\\" + fd.cFileName;
 					e.size = (static_cast<uint64_t>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
 					e.time = fd.ftLastWriteTime;
-					g_entries.push_back(e);
+					ctx->entries.push_back(e);
 				}
 			} while (FindNextFileW(hFind, &fd));
 			FindClose(hFind);
@@ -65,40 +69,57 @@ extern "C" {
 	__declspec(dllexport) void __stdcall SetChangeVolProc(HANDLE hArcData, tChangeVolProc pChangeVolProc1) {}
 	__declspec(dllexport) void __stdcall SetProcessDataProc(HANDLE hArcData, tProcessDataProc pProcessDataProc) {}
 
-	__declspec(dllexport) HANDLE __stdcall OpenArchive(tOpenArchiveData *ArchiveData)
+	// OpenArchive (Обязательная)
+	// Открывает *.dir файл.
+	__declspec(dllexport) HANDLE __stdcall OpenArchiveW(tOpenArchiveDataW *ArchiveData)
 	{
-		if (!LoadDirFile(ArchiveData->ArcName)) {
+		PluginContext *ctx = new PluginContext;
+		if (!LoadDirFile(ArchiveData->ArcName, ctx)) {
 			ArchiveData->OpenResult = E_EOPEN;
+			delete ctx;
 			return nullptr;
 		}
 		ArchiveData->OpenResult = 0;
-		return (HANDLE)1; // фиктивный handle
+		
+		ctx->entries.clear();
+		ctx->idx = 0;
+		return (HANDLE)ctx;
 	}
 
-	static size_t g_currentIndex = 0;
-
-	__declspec(dllexport) int __stdcall ReadHeader(HANDLE hArcData, tHeaderData *HeaderData)
+	// ReadHeader (Обязательная)
+	// Читает заголовок очередного файла в "архиве". TC будет вызывать эту функцию в цикле, пока вы не вернете E_END_ARCHIVE.
+	__declspec(dllexport) int __stdcall ReadHeaderW(HANDLE hArcData, tHeaderDataExW *HeaderData)
 	{
-		static size_t idx = 0;
-		if (idx >= g_entries.size()) {
-			idx = 0;
+		PluginContext *ctx = (PluginContext*)hArcData;
+		if (ctx->idx >= ctx->entries.size()) {
+			ctx->idx = 0;
 			return E_END_ARCHIVE;
 		}
-		const auto &e = g_entries[idx++];
-		strcpy_s(HeaderData->FileName, e.name.c_str());
+		const auto &e = ctx->entries[ctx->idx++];
+		wcscpy_s(HeaderData->FileName, e.name.c_str());
+		
 		HeaderData->UnpSize = (long)e.size;
 		FileTimeToDosDateTime(&e.time, ((LPWORD)&HeaderData->FileTime) + 1, (LPWORD)&HeaderData->FileTime);
 		HeaderData->FileAttr = FILE_ATTRIBUTE_NORMAL;
-		g_currentIndex++;
+
 		return 0;
 	}
 
-	__declspec(dllexport) int __stdcall ProcessFile(HANDLE hArcData, int Operation, char *DestPath, char *DestName)
+	// ProcessFile(Обязательная)
+	// Вызывается, когда пользователь хочет выполнить действие с файлом(распаковать, скопировать, пропустить).
+	__declspec(dllexport) int __stdcall ProcessFileW(HANDLE hArcData, int Operation, wchar_t *DestPath, wchar_t *DestName)
 	{
-		if (Operation == PK_SKIP) return 0;
-		if (g_currentIndex == 0) return E_NO_FILES; // safety
+		PluginContext *ctx = (PluginContext*)hArcData;
+		if (Operation == PK_SKIP) 
+			return 0;
 
-		const auto &e = g_entries[g_currentIndex - 1]; // последний выданный файл
+		// ищем файл по имени...
+		int fileIndex = 0;
+		
+	//	if (g_currentIndex == 0) 
+	//		return E_NO_FILES; // safety
+
+		const auto &e = ctx->entries[fileIndex]; // последний выданный файл
 
 		if (Operation == PK_TEST) {
 			// можем просто вернуть успех (нет проверки)
@@ -106,9 +127,9 @@ extern "C" {
 		}
 
 		if (Operation == PK_EXTRACT) {
-			std::wstring dest = AnsiToWide(DestPath);
+			std::wstring dest = DestPath;
 			if (!dest.empty() && dest.back() != L'\\') dest += L'\\';
-			dest += AnsiToWide(DestName);
+			dest += DestName;
 
 			if (!CopyFileW(e.originalPath.c_str(), dest.c_str(), FALSE)) {
 				return E_EWRITE;
@@ -117,9 +138,13 @@ extern "C" {
 		return 0;
 	}
 
+	// CloseArchive (Обязательная)
+	// Закрывает "архив" и освобождает ресурсы.
 	__declspec(dllexport) int __stdcall CloseArchive(HANDLE hArcData)
 	{
-		g_entries.clear();
+		PluginContext *ctx = (PluginContext*)hArcData;
+		ctx->entries.clear();
+		delete ctx;
 		return 0;
 	}
 
