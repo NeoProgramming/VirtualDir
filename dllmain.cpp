@@ -88,7 +88,7 @@ extern "C" {
 
 	// ReadHeader (Обязательная)
 	// Читает заголовок очередного файла в "архиве". TC будет вызывать эту функцию в цикле, пока вы не вернете E_END_ARCHIVE.
-	__declspec(dllexport) int __stdcall ReadHeaderW(HANDLE hArcData, tHeaderDataExW *HeaderData)
+	__declspec(dllexport) int __stdcall ReadHeaderExW(HANDLE hArcData, tHeaderDataExW *HeaderData)
 	{
 		PluginContext *ctx = (PluginContext*)hArcData;
 		if (ctx->idx >= ctx->entries.size()) {
@@ -109,17 +109,24 @@ extern "C" {
 	// Вызывается, когда пользователь хочет выполнить действие с файлом(распаковать, скопировать, пропустить).
 	__declspec(dllexport) int __stdcall ProcessFileW(HANDLE hArcData, int Operation, wchar_t *DestPath, wchar_t *DestName)
 	{
+		//const wchar_t *DestPath,  // Путь, КУДА распаковать (папка назначения)
+		//const wchar_t *DestName   // Имя, под которым сохранить файл В DestPath
+		// if (DestPath == NULL):   // Это специальный сигнал!  Цель: Дать TC временный файл для просмотра/запуска
+		// else: ПОЛЬЗОВАТЕЛЬ НАЖАЛ F5 (Распаковать); Цель: Скопировать файл в указанную пользователем папку
+
 		PluginContext *ctx = (PluginContext*)hArcData;
 		if (Operation == PK_SKIP) 
 			return 0;
 
-		// ищем файл по имени...
-		int fileIndex = 0;
-		
-	//	if (g_currentIndex == 0) 
-	//		return E_NO_FILES; // safety
+	//	// ищем файл по имени...
+	//	int fileIndex = FindFileEntry(DestName);
 
-		const auto &e = ctx->entries[fileIndex]; // последний выданный файл
+		int fileIndex = ctx->idx;
+		if(fileIndex < 0)
+			return E_NO_FILES;		
+
+		// берем информацию о файле
+		const auto &e = ctx->entries[fileIndex];
 
 		if (Operation == PK_TEST) {
 			// можем просто вернуть успех (нет проверки)
