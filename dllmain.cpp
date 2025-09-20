@@ -9,152 +9,82 @@ extern "C" {
 #include "wcxhead.h"   // заголовок из SDK Total Commander
 }
 
-namespace fs = std::filesystem;
+/*
+#ifndef _WIN64 
+#pragma comment(linker, "/EXPORT:OpenArchive=_OpenArchive@4")
+#pragma comment(linker, "/EXPORT:ReadHeader=_ReadHeader@8")
+#pragma comment(linker, "/EXPORT:ProcessFile=_ProcessFile@16")
+#pragma comment(linker, "/EXPORT:CloseArchive=_CloseArchive@4")
+#pragma comment(linker, "/EXPORT:GetPackerCaps=_GetPackerCaps@0")
 
-// --- Структура для хранения найденных файлов ---
-struct DirEntry {
-	std::wstring originalPath;  // полный путь к реальному файл
-	std::wstring name;
-	uint64_t size;
-	FILETIME time;
-};
+#pragma comment(linker, "/EXPORT:OpenArchiveW=_OpenArchiveW@4")
+#pragma comment(linker, "/EXPORT:ReadHeaderExW=_ReadHeaderExW@8")
+#pragma comment(linker, "/EXPORT:ProcessFileW=_ProcessFileW@16")
+#pragma comment(linker, "/EXPORT:CloseArchive=_CloseArchive@4")
+#pragma comment(linker, "/EXPORT:GetPackerCaps=_GetPackerCaps@0")
+#endif
+*/
 
-struct PluginContext {
-	std::vector<DirEntry> entries;	// список файлов
-	size_t idx;
-};
+// WCX API functions
 
-
-// --- Чтение .dir файла ---
-bool LoadDirFile(const wchar_t* fileName, PluginContext *ctx)
-{
-	ctx->entries.clear();
-
-	std::wifstream in(fileName);
-	if (!in.is_open()) 
-		return false;
-
-	std::wstring line;
-	while (std::getline(in, line)) {
-		// ожидаем строку вида: C:\MyPhotos\beach*.jpg
-		size_t pos = line.find_last_of(L"\\/");
-		if (pos == std::wstring::npos) continue;
-
-		std::wstring path = line.substr(0, pos);
-		std::wstring mask = line.substr(pos + 1);
-
-		WIN32_FIND_DATAW fd;
-		HANDLE hFind = FindFirstFileW((path + L"\\" + mask).c_str(), &fd);
-		if (hFind != INVALID_HANDLE_VALUE) {
-			do {
-				if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-					DirEntry e;
-					e.name = fd.cFileName;
-					e.originalPath = path + L"\\" + fd.cFileName;
-					e.size = (static_cast<uint64_t>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
-					e.time = fd.ftLastWriteTime;
-					ctx->entries.push_back(e);
-				}
-			} while (FindNextFileW(hFind, &fd));
-			FindClose(hFind);
-		}
-	}
-	return true;
-}
-
-// --- Основные функции WCX API ---
-
-// Инициализация
 extern "C" {
 	__declspec(dllexport) void __stdcall SetChangeVolProc(HANDLE hArcData, tChangeVolProc pChangeVolProc1) {}
 	__declspec(dllexport) void __stdcall SetProcessDataProc(HANDLE hArcData, tProcessDataProc pProcessDataProc) {}
 
-	// OpenArchive (Обязательная)
-	// Открывает *.dir файл.
-	__declspec(dllexport) HANDLE __stdcall OpenArchiveW(tOpenArchiveDataW *ArchiveData)
+	// OpenArchive (Обязательная); Открывает *.dir файл.
+//	__declspec(dllexport) HANDLE __stdcall OpenArchiveW(tOpenArchiveDataW *ArchiveData)
+//	{
+//		return OpenDirFile(ArchiveData->ArcName, ArchiveData->OpenResult);
+//	}
+	__declspec(dllexport) HANDLE __stdcall OpenArchive(tOpenArchiveData *ArchiveData)
 	{
-		PluginContext *ctx = new PluginContext;
-		if (!LoadDirFile(ArchiveData->ArcName, ctx)) {
-			ArchiveData->OpenResult = E_EOPEN;
-			delete ctx;
-			return nullptr;
-		}
-		ArchiveData->OpenResult = 0;
-		
-		ctx->entries.clear();
-		ctx->idx = 0;
-		return (HANDLE)ctx;
+		return OpenDirFile(AnsiToWide(ArchiveData->ArcName), ArchiveData->OpenResult);
 	}
 
 	// ReadHeader (Обязательная)
 	// Читает заголовок очередного файла в "архиве". TC будет вызывать эту функцию в цикле, пока вы не вернете E_END_ARCHIVE.
-	__declspec(dllexport) int __stdcall ReadHeaderExW(HANDLE hArcData, tHeaderDataExW *HeaderData)
+//	__declspec(dllexport) int __stdcall ReadHeaderExW(HANDLE hArcData, tHeaderDataExW *HeaderData)
+//	{
+//		std::wstring fname;
+//		int r = ReadDirEntry(hArcData, fname, HeaderData->UnpSize, HeaderData->FileTime, HeaderData->FileAttr);
+//		wcscpy_s(HeaderData->FileName, fname.c_str());
+//		return r;
+//	}
+	__declspec(dllexport) int __stdcall ReadHeader(HANDLE hArcData, tHeaderData *HeaderData)
 	{
-		PluginContext *ctx = (PluginContext*)hArcData;
-		if (ctx->idx >= ctx->entries.size()) {
-			ctx->idx = 0;
-			return E_END_ARCHIVE;
-		}
-		const auto &e = ctx->entries[ctx->idx++];
-		wcscpy_s(HeaderData->FileName, e.name.c_str());
-		
-		HeaderData->UnpSize = (long)e.size;
-		FileTimeToDosDateTime(&e.time, ((LPWORD)&HeaderData->FileTime) + 1, (LPWORD)&HeaderData->FileTime);
-		HeaderData->FileAttr = FILE_ATTRIBUTE_NORMAL;
-
-		return 0;
+		std::wstring fname;
+		unsigned int fsize;
+		int r = ReadDirEntry(hArcData, fname, fsize, HeaderData->FileTime, HeaderData->FileAttr);
+		strcpy_s(HeaderData->FileName, WideToAnsi(fname).c_str());
+		HeaderData->UnpSize = fsize;
+		return r;
 	}
 
 	// ProcessFile(Обязательная)
 	// Вызывается, когда пользователь хочет выполнить действие с файлом(распаковать, скопировать, пропустить).
-	__declspec(dllexport) int __stdcall ProcessFileW(HANDLE hArcData, int Operation, wchar_t *DestPath, wchar_t *DestName)
+//	__declspec(dllexport) int __stdcall ProcessFileW(HANDLE hArcData, int Operation, wchar_t *DestPath, wchar_t *DestName)
+//	{
+//		return ProcDirEntry(hArcData, Operation, DestPath, DestName);
+//	}
+	__declspec(dllexport) int __stdcall ProcessFile(HANDLE hArcData, int Operation, char *DestPath, char *DestName)
 	{
-		//const wchar_t *DestPath,  // Путь, КУДА распаковать (папка назначения)
-		//const wchar_t *DestName   // Имя, под которым сохранить файл В DestPath
-		// if (DestPath == NULL):   // Это специальный сигнал!  Цель: Дать TC временный файл для просмотра/запуска
-		// else: ПОЛЬЗОВАТЕЛЬ НАЖАЛ F5 (Распаковать); Цель: Скопировать файл в указанную пользователем папку
+		return ProcDirEntry(hArcData, Operation, AnsiToWide(DestPath), AnsiToWide(DestName));
+	}
 
-		PluginContext *ctx = (PluginContext*)hArcData;
-		if (Operation == PK_SKIP) 
-			return 0;
-
-	//	// ищем файл по имени...
-	//	int fileIndex = FindFileEntry(DestName);
-
-		int fileIndex = ctx->idx;
-		if(fileIndex < 0)
-			return E_NO_FILES;		
-
-		// берем информацию о файле
-		const auto &e = ctx->entries[fileIndex];
-
-		if (Operation == PK_TEST) {
-			// можем просто вернуть успех (нет проверки)
-			return 0;
-		}
-
-		if (Operation == PK_EXTRACT) {
-			std::wstring dest = DestPath;
-			if (!dest.empty() && dest.back() != L'\\') dest += L'\\';
-			dest += DestName;
-
-			if (!CopyFileW(e.originalPath.c_str(), dest.c_str(), FALSE)) {
-				return E_EWRITE;
-			}
-		}
-		return 0;
+	__declspec(dllexport) int __stdcall GetPackerCaps(void) 
+	{
+		// Ваш плагин определяет архив по содержимому (расширению .dir)
+		// Он не создает новые архивы и не модифицирует существующие
+		return PK_CAPS_BY_CONTENT;
 	}
 
 	// CloseArchive (Обязательная)
 	// Закрывает "архив" и освобождает ресурсы.
 	__declspec(dllexport) int __stdcall CloseArchive(HANDLE hArcData)
 	{
-		PluginContext *ctx = (PluginContext*)hArcData;
-		ctx->entries.clear();
-		delete ctx;
+		CloseDirFile(hArcData);
 		return 0;
 	}
-
 }
 
 // Экспортируемые символы

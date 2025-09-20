@@ -1,0 +1,10 @@
+LIBRARY VirtualDir
+EXPORTS
+    CloseArchive
+    GetPackerCaps
+    OpenArchive
+    ReadHeader
+    ProcessFile
+    SetChangeVolProc
+	SetProcessDataProc
+	
